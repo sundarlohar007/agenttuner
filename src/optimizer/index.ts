@@ -1,28 +1,42 @@
-import { readFileSync, writeFileSync } from "node:fs";
+import { readFileSync } from "node:fs";
 import type { WastePattern } from "../analyzers/types.js";
 import type { ConfigIssue } from "../diagnostics/types.js";
 import { countChanges, generateDiff } from "./diff.js";
+import { advancedRuleBasedOptimization, getOptimizationStats } from "./rules-engine.js";
+import { tryOllamaOptimization, isOllamaRunning, getOllamaStatus } from "./ollama.js";
 import { buildOptimizationPrompt, OPTIMIZER_SYSTEM_PROMPT } from "./prompts.js";
+
+export type OptimizationEngine = "rules" | "ollama" | "anthropic" | "openai";
+
+export interface OptimizeOptions {
+	engine?: OptimizationEngine;
+}
 
 export interface OptimizeResult {
 	original: string;
 	optimized: string;
 	diff: string;
 	changes: { added: number; removed: number };
+	engine: OptimizationEngine;
+	stats: {
+		vaguePatternsRemoved: number;
+		absolutesRewritten: number;
+		linesAdded: number;
+		linesRemoved: number;
+	};
 }
 
 /**
- * Try to call an LLM API to optimize the config.
- * Falls back to rule-based optimization if no API key is available.
+ * Optimize a config file using the specified engine.
  */
 export async function optimizeConfig(
 	filePath: string,
 	issues: ConfigIssue[],
 	wastePatterns: WastePattern[],
+	options: OptimizeOptions = {},
 ): Promise<OptimizeResult> {
 	const original = readFileSync(filePath, "utf-8");
 
-	// Format issues and waste patterns for the prompt
 	const issuesText = issues
 		.map((i) => `- [${i.severity}] ${i.message} → ${i.suggestion}`)
 		.join("\n");
@@ -34,144 +48,154 @@ export async function optimizeConfig(
 		)
 		.join("\n");
 
-	const optimized = await tryLlmOptimization(original, issuesText, wasteText);
+	let optimized: string;
+	let engine: OptimizationEngine = options.engine ?? "rules";
+
+	switch (options.engine) {
+		case "ollama": {
+			const ollamaResult = await tryOllamaOptimization(original, issuesText, wasteText);
+			if (ollamaResult) {
+				optimized = ollamaResult;
+				engine = "ollama";
+			} else {
+				optimized = advancedRuleBasedOptimization(original, issues, wastePatterns);
+				engine = "rules";
+			}
+			break;
+		}
+		case "anthropic": {
+			const anthropicResult = await tryAnthropicOptimization(original, issuesText, wasteText);
+			if (anthropicResult) {
+				optimized = anthropicResult;
+				engine = "anthropic";
+			} else {
+				optimized = advancedRuleBasedOptimization(original, issues, wastePatterns);
+				engine = "rules";
+			}
+			break;
+		}
+		case "openai": {
+			const openaiResult = await tryOpenAIOptimization(original, issuesText, wasteText);
+			if (openaiResult) {
+				optimized = openaiResult;
+				engine = "openai";
+			} else {
+				optimized = advancedRuleBasedOptimization(original, issues, wastePatterns);
+				engine = "rules";
+			}
+			break;
+		}
+		default:
+			optimized = advancedRuleBasedOptimization(original, issues, wastePatterns);
+			engine = "rules";
+			break;
+	}
+
 	const diff = generateDiff(original, optimized, filePath);
 	const changes = countChanges(diff);
+	const stats = getOptimizationStats(original, optimized);
 
-	return { original, optimized, diff, changes };
+	return { original, optimized, diff, changes, engine, stats };
 }
 
 /**
- * Attempt LLM-based optimization using available API keys.
+ * Try Anthropic API optimization.
  */
-async function tryLlmOptimization(
-	currentConfig: string,
+async function tryAnthropicOptimization(
+	config: string,
 	issuesText: string,
 	wasteText: string,
-): Promise<string> {
-	const prompt = buildOptimizationPrompt(currentConfig, issuesText, wasteText);
+): Promise<string | null> {
+	const apiKey = process.env["ANTHROPIC_API_KEY"];
+	if (!apiKey) return null;
 
-	// Try Anthropic API
-	const anthropicKey = process.env["ANTHROPIC_API_KEY"];
-	if (anthropicKey) {
-		try {
-			const response = await fetch("https://api.anthropic.com/v1/messages", {
-				method: "POST",
-				headers: {
-					"Content-Type": "application/json",
-					"x-api-key": anthropicKey,
-					"anthropic-version": "2023-06-01",
-				},
-				body: JSON.stringify({
-					model: "claude-sonnet-4-20250514",
-					max_tokens: 2000,
-					system: OPTIMIZER_SYSTEM_PROMPT,
-					messages: [{ role: "user", content: prompt }],
-				}),
-			});
+	const prompt = buildOptimizationPrompt(config, issuesText, wasteText);
 
-			if (response.ok) {
-				const data = (await response.json()) as {
-					content: Array<{ type: string; text: string }>;
-				};
-				const text = data.content
-					.filter((c) => c.type === "text")
-					.map((c) => c.text)
-					.join("");
-				if (text.trim()) return text.trim();
-			}
-		} catch {
-			// Fall through to rule-based
-		}
+	try {
+		const response = await fetch("https://api.anthropic.com/v1/messages", {
+			method: "POST",
+			headers: {
+				"Content-Type": "application/json",
+				"x-api-key": apiKey,
+				"anthropic-version": "2023-06-01",
+			},
+			body: JSON.stringify({
+				model: "claude-sonnet-4-20250514",
+				max_tokens: 2000,
+				system: OPTIMIZER_SYSTEM_PROMPT,
+				messages: [{ role: "user", content: prompt }],
+			}),
+			signal: AbortSignal.timeout(30000),
+		});
+
+		if (!response.ok) return null;
+
+		const data = (await response.json()) as {
+			content: Array<{ type: string; text: string }>;
+		};
+		const text = data.content
+			.filter((c) => c.type === "text")
+			.map((c) => c.text)
+			.join("");
+		return text.trim() || null;
+	} catch {
+		return null;
 	}
-
-	// Try OpenAI API
-	const openaiKey = process.env["OPENAI_API_KEY"];
-	if (openaiKey) {
-		try {
-			const response = await fetch("https://api.openai.com/v1/chat/completions", {
-				method: "POST",
-				headers: {
-					"Content-Type": "application/json",
-					Authorization: `Bearer ${openaiKey}`,
-				},
-				body: JSON.stringify({
-					model: "gpt-4o",
-					max_tokens: 2000,
-					messages: [
-						{ role: "system", content: OPTIMIZER_SYSTEM_PROMPT },
-						{ role: "user", content: prompt },
-					],
-				}),
-			});
-
-			if (response.ok) {
-				const data = (await response.json()) as {
-					choices: Array<{ message: { content: string } }>;
-				};
-				const text = data.choices[0]?.message?.content;
-				if (text?.trim()) return text.trim();
-			}
-		} catch {
-			// Fall through to rule-based
-		}
-	}
-
-	// Fallback: rule-based optimization
-	return ruleBasedOptimization(currentConfig, issuesText, wasteText);
 }
 
 /**
- * Simple rule-based optimization when no LLM is available.
+ * Try OpenAI API optimization.
  */
-function ruleBasedOptimization(
-	currentConfig: string,
-	_issuesText: string,
+async function tryOpenAIOptimization(
+	config: string,
+	issuesText: string,
 	wasteText: string,
-): string {
-	const lines = currentConfig.split("\n");
-	const optimized: string[] = [];
+): Promise<string | null> {
+	const apiKey = process.env["OPENAI_API_KEY"];
+	if (!apiKey) return null;
 
-	// Keep headers and bullet points, remove prose
-	for (const line of lines) {
-		const trimmed = line.trim();
-		// Keep headers
-		if (trimmed.startsWith("#")) {
-			optimized.push(line);
-			continue;
-		}
-		// Keep bullet points and commands
-		if (trimmed.startsWith("-") || trimmed.startsWith("*") || /`[^`]+`/.test(trimmed)) {
-			// Replace ALWAYS/NEVER
-			let processed = line;
-			processed = processed.replace(/\bALWAYS\b/g, "Prefer to");
-			processed = processed.replace(/\bNEVER\b/g, "Avoid");
-			optimized.push(processed);
-			continue;
-		}
-		// Skip long prose lines
-		if (trimmed.length > 100 && !trimmed.startsWith("#")) {
-			continue;
-		}
-		// Keep short lines
-		if (trimmed.length > 0) {
-			optimized.push(line);
-		}
+	const prompt = buildOptimizationPrompt(config, issuesText, wasteText);
+
+	try {
+		const response = await fetch("https://api.openai.com/v1/chat/completions", {
+			method: "POST",
+			headers: {
+				"Content-Type": "application/json",
+				Authorization: `Bearer ${apiKey}`,
+			},
+			body: JSON.stringify({
+				model: "gpt-4o",
+				max_tokens: 2000,
+				messages: [
+					{ role: "system", content: OPTIMIZER_SYSTEM_PROMPT },
+					{ role: "user", content: prompt },
+				],
+			}),
+			signal: AbortSignal.timeout(30000),
+		});
+
+		if (!response.ok) return null;
+
+		const data = (await response.json()) as {
+			choices: Array<{ message: { content: string } }>;
+		};
+		const text = data.choices[0]?.message?.content;
+		return text?.trim() || null;
+	} catch {
+		return null;
 	}
+}
 
-	// Add missing critical sections based on waste analysis
-	const hasWasteSection = optimized.some((l) => l.toLowerCase().includes("pitfall"));
-	if (!hasWasteSection && wasteText) {
-		optimized.push("");
-		optimized.push("## Common Pitfalls");
-		// Extract key waste patterns as pitfalls
-		const patterns = wasteText.split("\n").filter((l) => l.startsWith("-"));
-		for (const pattern of patterns.slice(0, 5)) {
-			optimized.push(pattern);
-		}
-	}
-
-	return optimized.join("\n");
+/**
+ * Detect the best available engine automatically.
+ */
+export async function detectBestEngine(): Promise<OptimizationEngine> {
+	if (process.env["ANTHROPIC_API_KEY"]) return "anthropic";
+	if (process.env["OPENAI_API_KEY"]) return "openai";
+	if (await isOllamaRunning()) return "ollama";
+	return "rules";
 }
 
 export { countChanges, generateDiff } from "./diff.js";
+export { getOllamaStatus } from "./ollama.js";
+export { getOptimizationStats } from "./rules-engine.js";
