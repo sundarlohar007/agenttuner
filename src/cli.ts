@@ -4,7 +4,8 @@ import { Command } from "commander";
 import { createSpinner } from "nanospinner";
 import pc from "picocolors";
 import { analyzeAllSessions } from "./analyzers/index.js";
-import { collectAllSessions, detectAgents } from "./collectors/index.js";
+import { collectAllSessions, detectAgents, AGENT_TYPES } from "./collectors/index.js";
+import type { AgentType } from "./collectors/types.js";
 import { diagnoseConfig } from "./diagnostics/index.js";
 import { optimizeConfig } from "./optimizer/index.js";
 import { generateHtmlReport } from "./report/html.js";
@@ -30,8 +31,8 @@ program
 	.argument("[path]", "Project path to scan", ".")
 	.option(
 		"-a, --agents <agents>",
-		"Comma-separated agents to scan (claude-code,cursor,codex)",
-		"claude-code,cursor,codex",
+		`Comma-separated agents to scan (${AGENT_TYPES.join(",")})`,
+		AGENT_TYPES.join(","),
 	)
 	.option("-o, --output <format>", "Output format (terminal, html, markdown)", "terminal")
 	.option("--output-file <path>", "Output file path (for html/markdown)")
@@ -40,9 +41,7 @@ program
 			const spinner = createSpinner("Scanning agent sessions...").start();
 
 			try {
-				const agents = options.agents.split(",").map((a) => a.trim()) as Array<
-					"claude-code" | "cursor" | "codex"
-				>;
+				const agents = options.agents.split(",").map((a) => a.trim()) as AgentType[];
 
 				// Detect available agents
 				const available = detectAgents();

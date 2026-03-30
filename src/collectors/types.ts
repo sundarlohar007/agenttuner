@@ -18,8 +18,23 @@ export interface UnifiedMessage {
 	tokenUsage?: TokenUsage;
 }
 
+export const AGENT_TYPES = [
+	"claude-code",
+	"cursor",
+	"codex",
+	"windsurf",
+	"gemini",
+	"aider",
+	"cline",
+	"opencode",
+	"copilot",
+	"antigravity",
+] as const;
+
+export type AgentType = (typeof AGENT_TYPES)[number];
+
 export interface UnifiedSession {
-	agent: "claude-code" | "cursor" | "codex";
+	agent: AgentType;
 	sessionId: string;
 	projectPath: string;
 	startTime: string;
@@ -28,8 +43,6 @@ export interface UnifiedSession {
 	totalInputTokens: number;
 	totalOutputTokens: number;
 }
-
-export type AgentType = "claude-code" | "cursor" | "codex";
 
 export interface AgentPaths {
 	agent: AgentType;
