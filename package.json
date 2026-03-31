@@ -1,7 +1,7 @@
 {
 	"name": "agenttuner",
 	"version": "0.1.0",
-	"description": "Your CLAUDE.md is wasting tokens. Auto-optimize your AI coding agent configs from real session data.",
+	"description": "Train your AI agents to improve themselves using execution feedback. Self-improving agent loop.",
 	"type": "module",
 	"main": "dist/cli.js",
 	"module": "dist/cli.js",
@@ -37,28 +37,35 @@
 		"lint": "biome check .",
 		"lint:fix": "biome check --write .",
 		"format": "biome format --write .",
+		"demo": "npx tsx demo/demo.ts",
 		"prepublishOnly": "pnpm build && pnpm test"
 	},
 	"keywords": [
+		"ai",
+		"llm",
+		"agents",
+		"autonomous-agents",
+		"prompt-engineering",
+		"developer-tools",
+		"typescript",
+		"ai-tools",
+		"automation",
+		"openai",
+		"anthropic",
 		"claude",
-		"claude-code",
-		"cursor",
-		"codex",
-		"ai-agent",
-		"agent-config",
-		"claude-md",
-		"agents-md",
-		"token-optimizer",
+		"self-improving",
+		"agent-loop",
 		"cli"
 	],
 	"author": "",
 	"license": "MIT",
 	"repository": {
 		"type": "git",
-		"url": "git+https://github.com/yourname/agenttuner.git"
+		"url": "git+https://github.com/sundarlohar007/agenttuner.git"
 	},
 	"packageManager": "pnpm@10.33.0",
 	"dependencies": {
+		"better-sqlite3": "^12.8.0",
 		"commander": "^14.0.3",
 		"nanospinner": "^1.2.2",
 		"picocolors": "^1.1.1",
@@ -66,6 +73,7 @@
 	},
 	"devDependencies": {
 		"@biomejs/biome": "^2.4.9",
+		"@types/better-sqlite3": "^7.6.13",
 		"@types/node": "^25.5.0",
 		"tsup": "^8.5.1",
 		"typescript": "^6.0.2",
